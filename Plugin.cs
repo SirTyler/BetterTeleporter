@@ -1,11 +1,17 @@
-﻿using BepInEx;
-using BepInEx.Logging;
-using GameNetcodeStuff;
-using HarmonyLib;
+﻿using System;
 using System.Reflection;
+using System.Linq;
+
+using GameNetcodeStuff;
 using UnityEngine;
 
+using BepInEx;
+using BepInEx.Configuration;
+using BepInEx.Logging;
+using HarmonyLib;
+
 using BetterTeleporter.Patches;
+using BetterTeleporter.Config;
 
 namespace BetterTeleporter
 {
@@ -13,14 +19,16 @@ namespace BetterTeleporter
     public class Plugin : BaseUnityPlugin
     {
         private readonly Harmony harmony = new Harmony(PluginInfo.PLUGIN_GUID);
-        internal ManualLogSource log;
+        internal static ManualLogSource log;
         public static Plugin instance { get; private set; }
 
         private void Awake()
         {
             instance = this;
             log = this.Logger;
-            harmony.PatchAll(typeof(BetterInversePatch));
+            ConfigSettings.Bind();
+            harmony.PatchAll(typeof(ShipTeleporterPatch));
+            harmony.PatchAll(typeof(StartOfRoundPatch));
             log.LogInfo($"Plugin {PluginInfo.PLUGIN_GUID} is loaded!");
         }
     }
@@ -28,11 +36,19 @@ namespace BetterTeleporter
 namespace BetterTeleporter.Patches
 {
     [HarmonyPatch(typeof(ShipTeleporter))] 
-    internal class BetterInversePatch
+    internal class ShipTeleporterPatch
     {
+        [HarmonyPatch("Awake")]
+        [HarmonyPrefix]
+        private static void Awake(ref bool ___isInverseTeleporter, ref float ___cooldownAmount)
+        {
+            if(___isInverseTeleporter) ___cooldownAmount = ConfigSettings.cooldownAmmountInverse;
+            else ___cooldownAmount = ConfigSettings.cooldownAmmount;
+        }
+
         [HarmonyPatch("TeleportPlayerOutWithInverseTeleporter")]
         [HarmonyPrefix]
-        private static bool TeleportPlayerOutWithInverseTeleporter(ShipTeleporter __instance, ref int[] ___playersBeingTeleported, int playerObj, Vector3 teleportPos)
+        private static bool TeleportPlayerOutWithInverseTeleporter(ShipTeleporter __instance, int playerObj, Vector3 teleportPos)
         {
             if (StartOfRound.Instance.allPlayerScripts[playerObj].isPlayerDead)
             {
@@ -40,11 +56,11 @@ namespace BetterTeleporter.Patches
             }
 
             PlayerControllerB playerControllerB = StartOfRound.Instance.allPlayerScripts[playerObj];
-            SetPlayerTeleporterId(__instance, ___playersBeingTeleported, playerControllerB, -1);
-            DropSomeItems(playerControllerB);
-            if ((bool)Object.FindObjectOfType<AudioReverbPresets>())
+            SetPlayerTeleporterId(__instance, playerControllerB, -1);
+            DropSomeItems(playerControllerB, true);
+            if ((bool)UnityEngine.Object.FindObjectOfType<AudioReverbPresets>())
             {
-                Object.FindObjectOfType<AudioReverbPresets>().audioPresets[2].ChangeAudioReverbForPlayer(playerControllerB);
+                UnityEngine.Object.FindObjectOfType<AudioReverbPresets>().audioPresets[2].ChangeAudioReverbForPlayer(playerControllerB);
             }
 
             playerControllerB.isInElevator = false;
@@ -56,22 +72,25 @@ namespace BetterTeleporter.Patches
             StartOfRound.Instance.allPlayerScripts[playerObj].beamOutParticle.Play();
             __instance.shipTeleporterAudio.PlayOneShot(__instance.teleporterBeamUpSFX);
             StartOfRound.Instance.allPlayerScripts[playerObj].movementAudio.PlayOneShot(__instance.teleporterBeamUpSFX);
-            if ((Object)(object)playerControllerB == (Object)(object)GameNetworkManager.Instance.localPlayerController)
+            if ((UnityEngine.Object)(object)playerControllerB == (UnityEngine.Object)(object)GameNetworkManager.Instance.localPlayerController)
             {
-                Debug.Log("Teleporter shaking camera");
+                UnityEngine.Debug.Log("Teleporter shaking camera");
                 HUDManager.Instance.ShakeCamera(ScreenShakeType.Big);
             }
 
             return false;
         }
 
-        private static void SetPlayerTeleporterId(ShipTeleporter __instance, int[] playersBeingTeleported, PlayerControllerB playerScript, int teleporterId)
+
+
+        private static void SetPlayerTeleporterId(ShipTeleporter __instance, PlayerControllerB playerScript, int teleporterId)
         {
+            int[] playersBeingTeleported = (int[]) AccessTools.Field(typeof(int[]), "playersBeingTeleported").GetValue(__instance);
             playerScript.shipTeleporterId = teleporterId;
             playersBeingTeleported[playerScript.playerClientId] = (int)playerScript.playerClientId;
         }
 
-        private static void DropSomeItems(PlayerControllerB __instance, bool itemsFall = true, bool disconnecting = false)
+        private static void DropSomeItems(PlayerControllerB __instance, bool inverse = false, bool itemsFall = true, bool disconnecting = false)
         {
             for (int i = 0; i < __instance.ItemSlots.Length; i++)
             {
@@ -81,18 +100,19 @@ namespace BetterTeleporter.Patches
                     continue;
                 }
 
-                if (grabbableObject is KeyItem)
-                {
-                    continue;
-                }
+                var keepList = ConfigSettings.keepListItems;
+                if (inverse) keepList = ConfigSettings.keepListItemsInverse;
 
-                if (grabbableObject is FlashlightItem || grabbableObject is WalkieTalkie)
+                if (keepList.Contains(grabbableObject.GetType().ToString()))
                 {
-                    float new_charge = grabbableObject.insertedBattery.charge * 0.5f;
-                    if (new_charge < 0) new_charge = 0; 
+                    if (grabbableObject.insertedBattery != null && ConfigSettings.doDrainItems)
+                    {
+                        float new_charge = grabbableObject.insertedBattery.charge * ConfigSettings.drainItemsPercent;
+                        if (new_charge < 0) new_charge = 0;
 
-                    grabbableObject.insertedBattery = new Battery(isEmpty: (new_charge != 0f), new_charge);
-                    grabbableObject.SyncBatteryServerRpc((int) (new_charge * 100f));
+                        grabbableObject.insertedBattery = new Battery(isEmpty: (new_charge != 0f), new_charge);
+                        grabbableObject.SyncBatteryServerRpc((int)(new_charge * 100f));
+                    }
                     continue;
                 }
 
@@ -156,6 +176,94 @@ namespace BetterTeleporter.Patches
             __instance.twoHanded = false;
             __instance.carryWeight = 1f;
             __instance.currentlyHeldObjectServer = null;
+        }
+    }
+
+    [HarmonyPatch(typeof(StartOfRound))]
+    internal class StartOfRoundPatch
+    {
+        private static FieldInfo cooldownProp = typeof(ShipTeleporter).GetField("cooldownTime", BindingFlags.Instance | BindingFlags.NonPublic);
+        
+        [HarmonyPatch("EndOfGame")]
+        [HarmonyPrefix]
+        private static void EndGame(StartOfRound __instance)
+        {
+            if(ConfigSettings.cooldownEnd) ResetCooldown(__instance);
+        }
+
+        [HarmonyPatch("StartGame")]
+        [HarmonyPrefix]
+        private static void StartGame(StartOfRound __instance)
+        {
+            if(ConfigSettings.cooldownEnd) ResetCooldown(__instance);
+        }
+
+        private static void ResetCooldown(StartOfRound instance)
+        {
+            ShipTeleporter[] array = UnityEngine.Object.FindObjectsOfType<ShipTeleporter>();
+            foreach (ShipTeleporter obj in array)
+            {
+                cooldownProp.SetValue(obj, 0f);
+            }
+        }
+    }
+}
+namespace BetterTeleporter.Config
+{
+    public static class ConfigSettings
+    {
+        public static int cooldownAmmount;
+        public static int cooldownAmmountInverse;
+        public static bool cooldownEnd;
+        public static string[] keepListItems;
+        public static string[] keepListItemsInverse;
+        public static bool doDrainItems;
+        public static float drainItemsPercent;
+
+        public static ConfigEntry<int> cooldown;
+        public static ConfigEntry<int> cooldownInverse;
+        public static ConfigEntry<bool> cooldownEndDay;
+        public static ConfigEntry<string> keepList;
+        public static ConfigEntry<string> keepListInverse;
+        public static ConfigEntry<bool> doDrain;
+        public static ConfigEntry<float> drainPercent;
+
+        public static void Bind()
+        {
+            cooldown = ((BaseUnityPlugin)Plugin.instance).Config.Bind<int>("General", "Cooldown", 10, "Number of seconds between teleporter uses");
+            cooldownInverse = ((BaseUnityPlugin)Plugin.instance).Config.Bind<int>("General", "CooldownInverse", 210, "Number of seconds between teleporter uses");
+            cooldownEndDay = ((BaseUnityPlugin)Plugin.instance).Config.Bind<bool>("General", "CooldownEndsOnNewDay", true, "true/false if cooldown should end on new day");
+            keepList = ((BaseUnityPlugin)Plugin.instance).Config.Bind<string>("General", "KeepItemList", "KeyItem,FlashlightItem,WalkieTalkie", "Comma-seperated list of items to be kept when teleported");
+            keepListInverse = ((BaseUnityPlugin)Plugin.instance).Config.Bind<string>("General", "KeepItemListInverse", "KeyItem,FlashlightItem,WalkieTalkie,RadarBoosterItem", "Comma-seperated list of items to be kept when teleported with inverse teleporter");
+            doDrain = ((BaseUnityPlugin)Plugin.instance).Config.Bind<bool>("General", "DrainItem", true, "true/false if items should drain battery charge");
+            drainPercent = ((BaseUnityPlugin)Plugin.instance).Config.Bind<float>("General", "DrainPercent", 0.5f, "The percentage (as float 0 to 1) of total charge that battery items lose when teleporting");
+
+            cooldownAmmount = cooldown.Value;
+            cooldownAmmountInverse = cooldownInverse.Value;
+            cooldownEnd = cooldownEndDay.Value;
+            SetKeepList(keepList.Value, false);
+            SetKeepList(keepListInverse.Value, true);
+            doDrainItems = doDrain.Value;
+            drainItemsPercent = drainPercent.Value;
+        }
+
+        public static void SetKeepList(string list, bool inverse = false)
+        {
+            if(inverse)
+            {
+                keepListItemsInverse = list.Split(',');
+                for (int i = 0; i < keepListItemsInverse.Length; i++)
+                {
+                    keepListItemsInverse[i] = keepListItemsInverse[i].Trim();
+                }
+            } else
+            {
+                keepListItems = list.Split(',');
+                for (int i = 0; i < keepListItems.Length; i++)
+                {
+                    keepListItems[i] = keepListItems[i].Trim();
+                }
+            }
         }
     }
 }
