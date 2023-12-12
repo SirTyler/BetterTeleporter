@@ -48,7 +48,7 @@ namespace BetterTeleporter.Patches
 
         [HarmonyPatch("TeleportPlayerOutWithInverseTeleporter")]
         [HarmonyPrefix]
-        private static bool TeleportPlayerOutWithInverseTeleporter(ShipTeleporter __instance, int playerObj, Vector3 teleportPos)
+        private static bool TeleportPlayerOutWithInverseTeleporter(ShipTeleporter __instance, ref int[] ___playersBeingTeleported, int playerObj, Vector3 teleportPos)
         {
             if (StartOfRound.Instance.allPlayerScripts[playerObj].isPlayerDead)
             {
@@ -56,7 +56,7 @@ namespace BetterTeleporter.Patches
             }
 
             PlayerControllerB playerControllerB = StartOfRound.Instance.allPlayerScripts[playerObj];
-            SetPlayerTeleporterId(__instance, playerControllerB, -1);
+            SetPlayerTeleporterId(___playersBeingTeleported, playerControllerB, -1);
             DropSomeItems(playerControllerB, true);
             if ((bool)UnityEngine.Object.FindObjectOfType<AudioReverbPresets>())
             {
@@ -83,11 +83,10 @@ namespace BetterTeleporter.Patches
 
 
 
-        private static void SetPlayerTeleporterId(ShipTeleporter __instance, PlayerControllerB playerScript, int teleporterId)
+        private static void SetPlayerTeleporterId(int[] ___playersBeingTeleported, PlayerControllerB playerScript, int teleporterId)
         {
-            int[] playersBeingTeleported = (int[]) AccessTools.Field(typeof(int[]), "playersBeingTeleported").GetValue(__instance);
             playerScript.shipTeleporterId = teleporterId;
-            playersBeingTeleported[playerScript.playerClientId] = (int)playerScript.playerClientId;
+            ___playersBeingTeleported[playerScript.playerClientId] = (int)playerScript.playerClientId;
         }
 
         private static void DropSomeItems(PlayerControllerB __instance, bool inverse = false, bool itemsFall = true, bool disconnecting = false)
