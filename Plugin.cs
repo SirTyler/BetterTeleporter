@@ -1,9 +1,13 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.Reflection;
+using System.Reflection.Emit;
 using System.Linq;
 
 using GameNetcodeStuff;
 using UnityEngine;
+using Unity.Netcode;
+using static Unity.Netcode.CustomMessagingManager;
 
 using BepInEx;
 using BepInEx.Configuration;
@@ -12,6 +16,7 @@ using HarmonyLib;
 
 using BetterTeleporter.Patches;
 using BetterTeleporter.Config;
+
 
 namespace BetterTeleporter
 {
@@ -27,6 +32,7 @@ namespace BetterTeleporter
             instance = this;
             log = this.Logger;
             ConfigSettings.Bind();
+            harmony.PatchAll(typeof(ConfigSync));
             harmony.PatchAll(typeof(ShipTeleporterPatch));
             harmony.PatchAll(typeof(StartOfRoundPatch));
             log.LogInfo($"Plugin {PluginInfo.PLUGIN_GUID} is loaded!");
@@ -35,65 +41,78 @@ namespace BetterTeleporter
 }
 namespace BetterTeleporter.Patches
 {
-    [HarmonyPatch(typeof(ShipTeleporter))] 
-    internal class ShipTeleporterPatch
+    [HarmonyPatch(typeof(ShipTeleporter))]
+    public class ShipTeleporterPatch
     {
-        [HarmonyPatch("Awake")]
-        [HarmonyPrefix]
+        private static readonly CodeMatch[] inverseTeleporterPatchIlMatch = new CodeMatch[] {
+            new CodeMatch(i => i.IsLdloc()),
+            new CodeMatch(i => i.LoadsConstant(1)),
+            new CodeMatch(i => i.LoadsConstant(0)),
+            new CodeMatch(i => i.Calls(originalMethodInfo))
+        };
+        private static readonly CodeMatch[] teleporterPatchIlMatch = new CodeMatch[] {
+            new CodeMatch(i => i.IsLdarg(0)),
+            new CodeMatch(i => i.opcode == OpCodes.Ldfld),
+            new CodeMatch(i => i.LoadsConstant(1)),
+            new CodeMatch(i => i.LoadsConstant(0)),
+            new CodeMatch(i => i.Calls(originalMethodInfo))
+        };
+
+        private static readonly MethodInfo originalMethodInfo = typeof(PlayerControllerB).GetMethod("DropAllHeldItems", BindingFlags.Instance | BindingFlags.Public);
+        private static readonly MethodInfo replaceMethodInfo = typeof(ShipTeleporterPatch).GetMethod("DropSomeItems", BindingFlags.Static | BindingFlags.NonPublic);
+
+        [HarmonyTranspiler, HarmonyPatch("TeleportPlayerOutWithInverseTeleporter")]
+        public static IEnumerable<CodeInstruction> InverseTeleporterDropAllButHeldItem(IEnumerable<CodeInstruction> instructions)
+        {
+            CodeMatcher codeMatcher = new CodeMatcher(instructions);
+
+            codeMatcher.Start();
+            codeMatcher.MatchForward(false, inverseTeleporterPatchIlMatch);
+            codeMatcher.Advance(1);
+            codeMatcher.RemoveInstructionsWithOffsets(0, 2);
+            codeMatcher.InsertAndAdvance(new CodeInstruction(OpCodes.Ldc_I4_0, 1));
+            codeMatcher.InsertAndAdvance(new CodeInstruction(OpCodes.Ldc_I4_1, 1));
+            codeMatcher.InsertAndAdvance(new CodeInstruction(OpCodes.Ldc_I4_2, 0));
+            codeMatcher.Insert(new CodeInstruction(OpCodes.Callvirt, replaceMethodInfo));
+
+            Plugin.log.LogInfo("Patched 'ShipTeleporterPatch.TeleportPlayerOutWithInverseTeleporter'");
+
+            return codeMatcher.Instructions();
+        }
+
+        [HarmonyTranspiler, HarmonyPatch("beamUpPlayer", MethodType.Enumerator)]
+        public static IEnumerable<CodeInstruction> TeleporterDropAllButHeldItem(IEnumerable<CodeInstruction> instructions)
+        {
+            CodeMatcher codeMatcher = new CodeMatcher(instructions);
+
+            codeMatcher.End();
+            codeMatcher.MatchBack(false, teleporterPatchIlMatch);
+            codeMatcher.Advance(2);
+            codeMatcher.RemoveInstructionsWithOffsets(0, 2);
+            codeMatcher.InsertAndAdvance(new CodeInstruction(OpCodes.Ldc_I4_0, 0));
+            codeMatcher.InsertAndAdvance(new CodeInstruction(OpCodes.Ldc_I4_1, 1));
+            codeMatcher.InsertAndAdvance(new CodeInstruction(OpCodes.Ldc_I4_2, 0));
+            codeMatcher.Insert(new CodeInstruction(OpCodes.Callvirt, replaceMethodInfo));
+
+            Plugin.log.LogInfo("Patched 'ShipTeleporterPatch.beamUpPlayer'");
+
+            return codeMatcher.Instructions();
+        }
+
+        [HarmonyPatch("Awake"), HarmonyPrefix]
         private static void Awake(ref bool ___isInverseTeleporter, ref float ___cooldownAmount)
         {
             if(___isInverseTeleporter) ___cooldownAmount = ConfigSettings.cooldownAmmountInverse;
             else ___cooldownAmount = ConfigSettings.cooldownAmmount;
         }
-
-        [HarmonyPatch("TeleportPlayerOutWithInverseTeleporter")]
-        [HarmonyPrefix]
-        private static bool TeleportPlayerOutWithInverseTeleporter(ShipTeleporter __instance, ref int[] ___playersBeingTeleported, int playerObj, Vector3 teleportPos)
+        
+        private static void DropSomeItems(PlayerControllerB player, bool inverse = false, bool itemsFall = true, bool disconnecting = false)
         {
-            if (StartOfRound.Instance.allPlayerScripts[playerObj].isPlayerDead)
+            MethodInfo methodInfo = player.GetType().GetMethod("SetSpecialGrabAnimationBool", BindingFlags.NonPublic | BindingFlags.Instance);
+
+            for (int i = 0; i < player.ItemSlots.Length; i++)
             {
-                return true;
-            }
-
-            PlayerControllerB playerControllerB = StartOfRound.Instance.allPlayerScripts[playerObj];
-            SetPlayerTeleporterId(___playersBeingTeleported, playerControllerB, -1);
-            DropSomeItems(playerControllerB, true);
-            if ((bool)UnityEngine.Object.FindObjectOfType<AudioReverbPresets>())
-            {
-                UnityEngine.Object.FindObjectOfType<AudioReverbPresets>().audioPresets[2].ChangeAudioReverbForPlayer(playerControllerB);
-            }
-
-            playerControllerB.isInElevator = false;
-            playerControllerB.isInHangarShipRoom = false;
-            playerControllerB.isInsideFactory = true;
-            playerControllerB.averageVelocity = 0f;
-            playerControllerB.velocityLastFrame = Vector3.zero;
-            StartOfRound.Instance.allPlayerScripts[playerObj].TeleportPlayer(teleportPos);
-            StartOfRound.Instance.allPlayerScripts[playerObj].beamOutParticle.Play();
-            __instance.shipTeleporterAudio.PlayOneShot(__instance.teleporterBeamUpSFX);
-            StartOfRound.Instance.allPlayerScripts[playerObj].movementAudio.PlayOneShot(__instance.teleporterBeamUpSFX);
-            if ((UnityEngine.Object)(object)playerControllerB == (UnityEngine.Object)(object)GameNetworkManager.Instance.localPlayerController)
-            {
-                UnityEngine.Debug.Log("Teleporter shaking camera");
-                HUDManager.Instance.ShakeCamera(ScreenShakeType.Big);
-            }
-
-            return false;
-        }
-
-
-
-        private static void SetPlayerTeleporterId(int[] ___playersBeingTeleported, PlayerControllerB playerScript, int teleporterId)
-        {
-            playerScript.shipTeleporterId = teleporterId;
-            ___playersBeingTeleported[playerScript.playerClientId] = (int)playerScript.playerClientId;
-        }
-
-        private static void DropSomeItems(PlayerControllerB __instance, bool inverse = false, bool itemsFall = true, bool disconnecting = false)
-        {
-            for (int i = 0; i < __instance.ItemSlots.Length; i++)
-            {
-                GrabbableObject grabbableObject = __instance.ItemSlots[i];
+                GrabbableObject grabbableObject = player.ItemSlots[i];
                 if (!((UnityEngine.Object)(object)grabbableObject != null))
                 {
                     continue;
@@ -120,16 +139,16 @@ namespace BetterTeleporter.Patches
                 {
                     grabbableObject.parentObject = null;
                     grabbableObject.heldByPlayerOnServer = false;
-                    if (__instance.isInElevator)
+                    if (player.isInElevator)
                     {
-                        ((Component)(object)grabbableObject).transform.SetParent(__instance.playersManager.elevatorTransform, worldPositionStays: true);
+                        ((Component)(object)grabbableObject).transform.SetParent(player.playersManager.elevatorTransform, worldPositionStays: true);
                     }
                     else
                     {
-                        ((Component)(object)grabbableObject).transform.SetParent(__instance.playersManager.propsContainer, worldPositionStays: true);
+                        ((Component)(object)grabbableObject).transform.SetParent(player.playersManager.propsContainer, worldPositionStays: true);
                     }
 
-                    __instance.SetItemInElevator(__instance.isInHangarShipRoom, __instance.isInElevator, grabbableObject);
+                    player.SetItemInElevator(player.isInHangarShipRoom, player.isInElevator, grabbableObject);
                     grabbableObject.EnablePhysics(enable: true);
                     grabbableObject.EnableItemMeshes(enable: true);
                     ((Component)(object)grabbableObject).transform.localScale = grabbableObject.originalScale;
@@ -138,7 +157,7 @@ namespace BetterTeleporter.Patches
                     grabbableObject.startFallingPosition = ((Component)(object)grabbableObject).transform.parent.InverseTransformPoint(((Component)(object)grabbableObject).transform.position);
                     grabbableObject.FallToGround(randomizePosition: true);
                     grabbableObject.fallTime = UnityEngine.Random.Range(-0.3f, 0.05f);
-                    if (__instance.IsOwner)
+                    if (player.IsOwner)
                     {
                         grabbableObject.DiscardItemOnClient();
                     }
@@ -148,33 +167,33 @@ namespace BetterTeleporter.Patches
                     }
                 }
 
-                if (__instance.IsOwner && !disconnecting)
+                if (player.IsOwner && !disconnecting)
                 {
                     ((Behaviour)(object)HUDManager.Instance.holdingTwoHandedItem).enabled = false;
                     ((Behaviour)(object)HUDManager.Instance.itemSlotIcons[i]).enabled = false;
                     HUDManager.Instance.ClearControlTips();
-                    __instance.activatingItem = false;
+                    player.activatingItem = false;
                 }
 
-                __instance.ItemSlots[i] = null;
+                player.ItemSlots[i] = null;
             }
 
-            if (__instance.isHoldingObject)
+            if (player.isHoldingObject)
             {
-                __instance.isHoldingObject = false;
-                if ((UnityEngine.Object)(object)__instance.currentlyHeldObjectServer != null)
+                player.isHoldingObject = false;
+                if ((UnityEngine.Object)(object)player.currentlyHeldObjectServer != null)
                 {
-                    MethodInfo methodInfo = __instance.GetType().GetMethod("SetSpecialGrabAnimationBool", BindingFlags.NonPublic | BindingFlags.Instance);
-                    methodInfo.Invoke(__instance, new object[] { false, __instance.currentlyHeldObjectServer });
+                    
+                    methodInfo.Invoke(player, new object[] { false, player.currentlyHeldObjectServer });
                 }
 
-                __instance.playerBodyAnimator.SetBool("cancelHolding", value: true);
-                __instance.playerBodyAnimator.SetTrigger("Throw");
+                player.playerBodyAnimator.SetBool("cancelHolding", value: true);
+                player.playerBodyAnimator.SetTrigger("Throw");
             }
 
-            __instance.twoHanded = false;
-            __instance.carryWeight = 1f;
-            __instance.currentlyHeldObjectServer = null;
+            player.twoHanded = false;
+            player.carryWeight = 1f;
+            player.currentlyHeldObjectServer = null;
         }
     }
 
@@ -182,22 +201,26 @@ namespace BetterTeleporter.Patches
     internal class StartOfRoundPatch
     {
         private static FieldInfo cooldownProp = typeof(ShipTeleporter).GetField("cooldownTime", BindingFlags.Instance | BindingFlags.NonPublic);
-        
-        [HarmonyPatch("EndOfGame")]
-        [HarmonyPrefix]
-        private static void EndGame(StartOfRound __instance)
+
+        [HarmonyPatch("StartGame"), HarmonyPostfix]
+        private static void StartGame()
         {
-            if(ConfigSettings.cooldownEnd) ResetCooldown(__instance);
+            if (ConfigSettings.cooldownEnd) ResetCooldown();
         }
 
-        [HarmonyPatch("StartGame")]
-        [HarmonyPrefix]
-        private static void StartGame(StartOfRound __instance)
+        [HarmonyPatch("EndOfGame"), HarmonyPostfix]
+        private static void EndOfGame()
         {
-            if(ConfigSettings.cooldownEnd) ResetCooldown(__instance);
+            if(ConfigSettings.cooldownEnd) ResetCooldown();
         }
 
-        private static void ResetCooldown(StartOfRound instance)
+        [HarmonyPatch("EndOfGameClientRpc"), HarmonyPostfix]
+        private static void EndOfGameClientRpc()
+        {
+            if(ConfigSettings.cooldownEnd) ResetCooldown();
+        }
+
+        private static void ResetCooldown()
         {
             ShipTeleporter[] array = UnityEngine.Object.FindObjectsOfType<ShipTeleporter>();
             foreach (ShipTeleporter obj in array)
@@ -262,6 +285,123 @@ namespace BetterTeleporter.Config
                 {
                     keepListItems[i] = keepListItems[i].Trim();
                 }
+            }
+        }
+    }
+    
+    [HarmonyPatch(typeof(PlayerControllerB))]
+    public class ConfigSync
+    {
+        [HarmonyPatch("ConnectClientToPlayerObject"), HarmonyPostfix]
+        public static void InitializeLocalPlayer()
+        {
+            if (NetworkManager.Singleton.IsServer)
+            {
+                NetworkManager.Singleton.CustomMessagingManager.RegisterNamedMessageHandler("BetterTeleporterConfigSync", new HandleNamedMessageDelegate(OnReceiveConfigSyncRequest));
+            }
+            else
+            {
+                NetworkManager.Singleton.CustomMessagingManager.RegisterNamedMessageHandler("BetterTeleporterReceiveConfigSync", new HandleNamedMessageDelegate(OnReceiveConfigSync));
+                NetworkManager.Singleton.CustomMessagingManager.RegisterNamedMessageHandler("BetterTeleporterReceiveConfigSync_KeepList", new HandleNamedMessageDelegate(OnReceiveConfigSync_KeepList));
+                NetworkManager.Singleton.CustomMessagingManager.RegisterNamedMessageHandler("BetterTeleporterReceiveConfigSync_KeepListInverse", new HandleNamedMessageDelegate(OnReceiveConfigSync_KeepListInverse));
+                RequestConfigSync();
+            }
+        }
+
+        public static void RequestConfigSync()
+        {
+            if (NetworkManager.Singleton.IsClient)
+            {
+                Plugin.log.LogInfo("Sending config sync request to server.");
+                FastBufferWriter val = new FastBufferWriter(16, Unity.Collections.Allocator.Temp, -1);
+                NetworkManager.Singleton.CustomMessagingManager.SendNamedMessage("BetterTeleporterConfigSync", 0ul, val, NetworkDelivery.ReliableSequenced);
+            }
+            else
+            {
+                Plugin.log.LogWarning("Failed to send config sync request.");
+            }
+        }
+
+        public static void OnReceiveConfigSyncRequest(ulong clientId, FastBufferReader reader)
+        {
+            if (NetworkManager.Singleton.IsServer)
+            {
+                Plugin.log.LogInfo("Receiving sync request from client with id: " + clientId + ". Sending config sync to client.");
+                FastBufferWriter val = new FastBufferWriter((sizeof(int) * 2) + (sizeof(bool) * 2) + sizeof(float), Unity.Collections.Allocator.Temp, -1);
+                val.WriteValueSafe<int>(ConfigSettings.cooldown.Value,  default(FastBufferWriter.ForPrimitives));
+                val.WriteValueSafe<int>(ConfigSettings.cooldownInverse.Value, default(FastBufferWriter.ForPrimitives));
+                val.WriteValueSafe<bool>(ConfigSettings.cooldownEndDay.Value, default(FastBufferWriter.ForPrimitives));
+                val.WriteValueSafe<bool>(ConfigSettings.doDrain.Value, default(FastBufferWriter.ForPrimitives));
+                val.WriteValueSafe<float>(ConfigSettings.drainPercent.Value, default(FastBufferWriter.ForPrimitives));
+                NetworkManager.Singleton.CustomMessagingManager.SendNamedMessage("BetterTeleporterReceiveConfigSync", clientId, val, NetworkDelivery.ReliableSequenced);
+
+                FastBufferWriter val2 = new FastBufferWriter((ConfigSettings.keepList.Value.Length) * sizeof(char), Unity.Collections.Allocator.Temp, -1);
+                val2.WriteValueSafe(ConfigSettings.keepList.Value, true);
+                NetworkManager.Singleton.CustomMessagingManager.SendNamedMessage("BetterTeleporterReceiveConfigSync_KeepList", clientId, val2, NetworkDelivery.ReliableSequenced);
+
+                FastBufferWriter val3 = new FastBufferWriter((ConfigSettings.keepListInverse.Value.Length) * sizeof(char), Unity.Collections.Allocator.Temp, -1);
+                val3.WriteValueSafe(ConfigSettings.keepListInverse.Value, true);
+                NetworkManager.Singleton.CustomMessagingManager.SendNamedMessage("BetterTeleporterReceiveConfigSync_KeepListInverse", clientId, val3, NetworkDelivery.ReliableSequenced);
+            }
+        }
+
+        public static void OnReceiveConfigSync(ulong clientId, FastBufferReader reader)
+        {
+            if (((FastBufferReader) reader).TryBeginRead(4))
+            {
+                Plugin.log.LogInfo("Receiving sync from server.");
+
+                ((FastBufferReader)reader).ReadValueSafe<int>(out int coolA);
+                ConfigSettings.cooldownAmmount = coolA;
+                Plugin.log.LogInfo($"Recieved 'cooldownAmmount = {coolA}");
+                ((FastBufferReader)reader).ReadValueSafe<int>(out int coolB);
+                ConfigSettings.cooldownAmmountInverse = coolB;
+                Plugin.log.LogInfo($"Recieved 'cooldownAmmountInverse = {coolB}");
+                ((FastBufferReader)reader).ReadValueSafe<bool>(out bool coolDay);
+                ConfigSettings.cooldownEnd = coolDay;
+                Plugin.log.LogInfo($"Recieved 'cooldownEnd = {coolDay}");
+                ((FastBufferReader)reader).ReadValueSafe<bool>(out bool doDrain);
+                ConfigSettings.doDrainItems = doDrain;
+                Plugin.log.LogInfo($"Recieved 'doDrainItems = {doDrain}");
+                ((FastBufferReader)reader).ReadValueSafe<float>(out float drainPercent);
+                ConfigSettings.drainItemsPercent = drainPercent;
+                Plugin.log.LogInfo($"Recieved 'drainItemsPercent = {drainPercent}");
+            }
+            else
+            {
+                Plugin.log.LogWarning("Error receiving config sync from server.");
+            }
+        }
+
+        public static void OnReceiveConfigSync_KeepList(ulong clientId, FastBufferReader reader)
+        {
+            if (((FastBufferReader)reader).TryBeginRead(4))
+            {
+                Plugin.log.LogInfo("Receiving sync from server.");
+
+                ((FastBufferReader)reader).ReadValueSafe(out string list, true);
+                ConfigSettings.SetKeepList(list, false);
+                Plugin.log.LogInfo($"Recieved 'keepList = {list}");
+            }
+            else
+            {
+                Plugin.log.LogWarning("Error receiving keepList config sync from server.");
+            }
+        }
+
+        public static void OnReceiveConfigSync_KeepListInverse(ulong clientId, FastBufferReader reader)
+        {
+            if (((FastBufferReader)reader).TryBeginRead(4))
+            {
+                Plugin.log.LogInfo("Receiving sync from server.");
+
+                ((FastBufferReader)reader).ReadValueSafe(out string list, true);
+                ConfigSettings.SetKeepList(list, true);
+                Plugin.log.LogInfo($"Recieved 'keepListInverse = {list}");
+            }
+            else
+            {
+                Plugin.log.LogWarning("Error receiving keepListInverse config sync from server.");
             }
         }
     }
