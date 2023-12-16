@@ -72,7 +72,6 @@ namespace BetterTeleporter.Patches
             codeMatcher.RemoveInstructionsWithOffsets(0, 2);
             codeMatcher.InsertAndAdvance(new CodeInstruction(OpCodes.Ldc_I4_0, 1));
             codeMatcher.InsertAndAdvance(new CodeInstruction(OpCodes.Ldc_I4_1, 1));
-            codeMatcher.InsertAndAdvance(new CodeInstruction(OpCodes.Ldc_I4_2, 0));
             codeMatcher.Insert(new CodeInstruction(OpCodes.Callvirt, replaceMethodInfo));
 
             Plugin.log.LogInfo("Patched 'ShipTeleporterPatch.TeleportPlayerOutWithInverseTeleporter'");
@@ -91,7 +90,6 @@ namespace BetterTeleporter.Patches
             codeMatcher.RemoveInstructionsWithOffsets(0, 2);
             codeMatcher.InsertAndAdvance(new CodeInstruction(OpCodes.Ldc_I4_0, 0));
             codeMatcher.InsertAndAdvance(new CodeInstruction(OpCodes.Ldc_I4_1, 1));
-            codeMatcher.InsertAndAdvance(new CodeInstruction(OpCodes.Ldc_I4_2, 0));
             codeMatcher.Insert(new CodeInstruction(OpCodes.Callvirt, replaceMethodInfo));
 
             Plugin.log.LogInfo("Patched 'ShipTeleporterPatch.beamUpPlayer'");
@@ -105,8 +103,8 @@ namespace BetterTeleporter.Patches
             if(___isInverseTeleporter) ___cooldownAmount = ConfigSettings.cooldownAmmountInverse;
             else ___cooldownAmount = ConfigSettings.cooldownAmmount;
         }
-        
-        private static void DropSomeItems(PlayerControllerB player, bool inverse = false, bool itemsFall = true, bool disconnecting = false)
+
+        private static void DropSomeItems(PlayerControllerB player, bool inverse = false, bool itemsFall = true)
         {
             MethodInfo methodInfo = player.GetType().GetMethod("SetSpecialGrabAnimationBool", BindingFlags.NonPublic | BindingFlags.Instance);
 
@@ -125,7 +123,7 @@ namespace BetterTeleporter.Patches
                 {
                     if (grabbableObject.insertedBattery != null && ConfigSettings.doDrainItems)
                     {
-                        float new_charge = grabbableObject.insertedBattery.charge * ConfigSettings.drainItemsPercent;
+                        float new_charge = grabbableObject.insertedBattery.charge - (grabbableObject.insertedBattery.charge * ConfigSettings.drainItemsPercent);
                         if (new_charge < 0) new_charge = 0;
 
                         grabbableObject.insertedBattery = new Battery(isEmpty: (new_charge != 0f), new_charge);
@@ -167,10 +165,10 @@ namespace BetterTeleporter.Patches
                     }
                 }
 
-                if (player.IsOwner && !disconnecting)
+                if (player.IsOwner)
                 {
-                    ((Behaviour)(object)HUDManager.Instance.holdingTwoHandedItem).enabled = false;
-                    ((Behaviour)(object)HUDManager.Instance.itemSlotIcons[i]).enabled = false;
+                    HUDManager.Instance.holdingTwoHandedItem.enabled = false;
+                    HUDManager.Instance.itemSlotIcons[i].enabled = false;
                     HUDManager.Instance.ClearControlTips();
                     player.activatingItem = false;
                 }
