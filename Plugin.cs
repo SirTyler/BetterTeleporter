@@ -100,7 +100,7 @@ namespace BetterTeleporter.Patches
         [HarmonyPatch("Awake"), HarmonyPrefix]
         private static void Awake(ref bool ___isInverseTeleporter, ref float ___cooldownAmount)
         {
-            if(___isInverseTeleporter) ___cooldownAmount = ConfigSettings.cooldownAmmountInverse;
+            if (___isInverseTeleporter) ___cooldownAmount = ConfigSettings.cooldownAmmountInverse;
             else ___cooldownAmount = ConfigSettings.cooldownAmmount;
         }
 
@@ -108,16 +108,16 @@ namespace BetterTeleporter.Patches
         {
             MethodInfo methodInfo = player.GetType().GetMethod("SetSpecialGrabAnimationBool", BindingFlags.NonPublic | BindingFlags.Instance);
 
+            var keepList = ConfigSettings.keepListItems;
+            if (inverse) keepList = ConfigSettings.keepListItemsInverse;
+
+            float weight = 1f;
+            bool twohanded = false;
+
             for (int i = 0; i < player.ItemSlots.Length; i++)
             {
                 GrabbableObject grabbableObject = player.ItemSlots[i];
-                if (!((UnityEngine.Object)(object)grabbableObject != null))
-                {
-                    continue;
-                }
-
-                var keepList = ConfigSettings.keepListItems;
-                if (inverse) keepList = ConfigSettings.keepListItemsInverse;
+                if (grabbableObject == null) continue;
 
                 if (keepList.Contains(grabbableObject.GetType().ToString()))
                 {
@@ -129,9 +129,9 @@ namespace BetterTeleporter.Patches
                         grabbableObject.insertedBattery = new Battery(isEmpty: (new_charge != 0f), new_charge);
                         grabbableObject.SyncBatteryServerRpc((int)(new_charge * 100f));
                     }
+                    weight += Mathf.Clamp(grabbableObject.itemProperties.weight - 1f, 0f, 10f);
                     continue;
                 }
-
 
                 if (itemsFall)
                 {
@@ -139,20 +139,20 @@ namespace BetterTeleporter.Patches
                     grabbableObject.heldByPlayerOnServer = false;
                     if (player.isInElevator)
                     {
-                        ((Component)(object)grabbableObject).transform.SetParent(player.playersManager.elevatorTransform, worldPositionStays: true);
+                        grabbableObject.transform.SetParent(player.playersManager.elevatorTransform, worldPositionStays: true);
                     }
                     else
                     {
-                        ((Component)(object)grabbableObject).transform.SetParent(player.playersManager.propsContainer, worldPositionStays: true);
+                        grabbableObject.transform.SetParent(player.playersManager.propsContainer, worldPositionStays: true);
                     }
 
                     player.SetItemInElevator(player.isInHangarShipRoom, player.isInElevator, grabbableObject);
                     grabbableObject.EnablePhysics(enable: true);
                     grabbableObject.EnableItemMeshes(enable: true);
-                    ((Component)(object)grabbableObject).transform.localScale = grabbableObject.originalScale;
+                    grabbableObject.transform.localScale = grabbableObject.originalScale;
                     grabbableObject.isHeld = false;
                     grabbableObject.isPocketed = false;
-                    grabbableObject.startFallingPosition = ((Component)(object)grabbableObject).transform.parent.InverseTransformPoint(((Component)(object)grabbableObject).transform.position);
+                    grabbableObject.startFallingPosition = grabbableObject.transform.parent.InverseTransformPoint(grabbableObject.transform.position);
                     grabbableObject.FallToGround(randomizePosition: true);
                     grabbableObject.fallTime = UnityEngine.Random.Range(-0.3f, 0.05f);
                     if (player.IsOwner)
@@ -176,29 +176,30 @@ namespace BetterTeleporter.Patches
                 player.ItemSlots[i] = null;
             }
 
-            if (player.isHoldingObject)
+            GrabbableObject held = player.ItemSlots[player.currentItemSlot];
+            if (held == null)
             {
                 player.isHoldingObject = false;
-                if ((UnityEngine.Object)(object)player.currentlyHeldObjectServer != null)
+                if (player.currentlyHeldObjectServer != null)
                 {
-                    
                     methodInfo.Invoke(player, new object[] { false, player.currentlyHeldObjectServer });
                 }
 
                 player.playerBodyAnimator.SetBool("cancelHolding", value: true);
                 player.playerBodyAnimator.SetTrigger("Throw");
             }
+            else twohanded = held.itemProperties.twoHanded;
 
-            player.twoHanded = false;
-            player.carryWeight = 1f;
-            player.currentlyHeldObjectServer = null;
+            player.twoHanded = twohanded;
+            player.carryWeight = weight;
+            player.currentlyHeldObjectServer = held;
         }
     }
 
     [HarmonyPatch(typeof(StartOfRound))]
     internal class StartOfRoundPatch
     {
-        private static FieldInfo cooldownProp = typeof(ShipTeleporter).GetField("cooldownTime", BindingFlags.Instance | BindingFlags.NonPublic);
+        private static readonly FieldInfo cooldownProp = typeof(ShipTeleporter).GetField("cooldownTime", BindingFlags.Instance | BindingFlags.NonPublic);
 
         [HarmonyPatch("StartGame"), HarmonyPostfix]
         private static void StartGame()
@@ -209,13 +210,13 @@ namespace BetterTeleporter.Patches
         [HarmonyPatch("EndOfGame"), HarmonyPostfix]
         private static void EndOfGame()
         {
-            if(ConfigSettings.cooldownEnd) ResetCooldown();
+            if (ConfigSettings.cooldownEnd) ResetCooldown();
         }
 
         [HarmonyPatch("EndOfGameClientRpc"), HarmonyPostfix]
         private static void EndOfGameClientRpc()
         {
-            if(ConfigSettings.cooldownEnd) ResetCooldown();
+            if (ConfigSettings.cooldownEnd) ResetCooldown();
         }
 
         private static void ResetCooldown()
@@ -269,14 +270,15 @@ namespace BetterTeleporter.Config
 
         public static void SetKeepList(string list, bool inverse = false)
         {
-            if(inverse)
+            if (inverse)
             {
                 keepListItemsInverse = list.Split(',');
                 for (int i = 0; i < keepListItemsInverse.Length; i++)
                 {
                     keepListItemsInverse[i] = keepListItemsInverse[i].Trim();
                 }
-            } else
+            }
+            else
             {
                 keepListItems = list.Split(',');
                 for (int i = 0; i < keepListItems.Length; i++)
@@ -286,7 +288,7 @@ namespace BetterTeleporter.Config
             }
         }
     }
-    
+
     [HarmonyPatch(typeof(PlayerControllerB))]
     public class ConfigSync
     {
@@ -326,7 +328,7 @@ namespace BetterTeleporter.Config
             {
                 Plugin.log.LogInfo("Receiving sync request from client with id: " + clientId + ". Sending config sync to client.");
                 FastBufferWriter val = new FastBufferWriter((sizeof(int) * 2) + (sizeof(bool) * 2) + sizeof(float), Unity.Collections.Allocator.Temp, -1);
-                val.WriteValueSafe<int>(ConfigSettings.cooldown.Value,  default(FastBufferWriter.ForPrimitives));
+                val.WriteValueSafe<int>(ConfigSettings.cooldown.Value, default(FastBufferWriter.ForPrimitives));
                 val.WriteValueSafe<int>(ConfigSettings.cooldownInverse.Value, default(FastBufferWriter.ForPrimitives));
                 val.WriteValueSafe<bool>(ConfigSettings.cooldownEndDay.Value, default(FastBufferWriter.ForPrimitives));
                 val.WriteValueSafe<bool>(ConfigSettings.doDrain.Value, default(FastBufferWriter.ForPrimitives));
@@ -345,7 +347,7 @@ namespace BetterTeleporter.Config
 
         public static void OnReceiveConfigSync(ulong clientId, FastBufferReader reader)
         {
-            if (((FastBufferReader) reader).TryBeginRead(4))
+            if (((FastBufferReader)reader).TryBeginRead(4))
             {
                 Plugin.log.LogInfo("Receiving sync from server.");
 

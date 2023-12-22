@@ -24,3 +24,31 @@ Install like any other BepInEx mod. Install to the following directory:
 #### Can I contribute somehow?
 
 Feel free to submit any bug reports, pull-requests, or feature requests to [GitHub](https://github.com/SirTyler/BetterTeleporter)
+
+## Config Values
+
+#### List of ItemTypes
+
+- BoomboxItem
+- ClipboardItem
+- ExtensionLadderItem
+- FlashlightItem
+- JetpackItem
+- KeyItem
+- LockPicker
+- RadarBoosterItem
+- ShotgunItem
+- Shovel
+- SprayPaintItem
+- StunGrenadeItem
+- WalkieTalkie
+
+#### List of Scrap
+
+- GiftBoxItem
+- HauntedMaskItem
+- LungProp
+- NoisemakerProp
+- PhysicsProp
+- RemoteProp
+- WhoopieCushionItem
