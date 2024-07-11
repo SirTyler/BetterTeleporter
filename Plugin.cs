@@ -109,7 +109,12 @@ namespace BetterTeleporter.Patches
             MethodInfo methodInfo = player.GetType().GetMethod("SetSpecialGrabAnimationBool", BindingFlags.NonPublic | BindingFlags.Instance);
 
             var keepList = ConfigSettings.keepListItems;
-            if (inverse) keepList = ConfigSettings.keepListItemsInverse;
+            var useKeepList = ConfigSettings.doUseKeepList;
+            if (inverse)
+            {
+                keepList = ConfigSettings.keepListItemsInverse;
+                useKeepList = ConfigSettings.doUseKeepListInverse;
+            }
 
             float weight = 1f;
             bool twohanded = false;
@@ -119,7 +124,7 @@ namespace BetterTeleporter.Patches
                 GrabbableObject grabbableObject = player.ItemSlots[i];
                 if (grabbableObject == null) continue;
 
-                if (keepList.Contains(grabbableObject.GetType().ToString()))
+                if (!useKeepList || keepList.Contains(grabbableObject.GetType().ToString()))
                 {
                     if (grabbableObject.insertedBattery != null && ConfigSettings.doDrainItems)
                     {
@@ -236,7 +241,9 @@ namespace BetterTeleporter.Config
         public static int cooldownAmmount;
         public static int cooldownAmmountInverse;
         public static bool cooldownEnd;
+        public static bool doUseKeepList;
         public static string[] keepListItems;
+        public static bool doUseKeepListInverse;
         public static string[] keepListItemsInverse;
         public static bool doDrainItems;
         public static float drainItemsPercent;
@@ -244,7 +251,9 @@ namespace BetterTeleporter.Config
         public static ConfigEntry<int> cooldown;
         public static ConfigEntry<int> cooldownInverse;
         public static ConfigEntry<bool> cooldownEndDay;
+        public static ConfigEntry<bool> useKeepList;
         public static ConfigEntry<string> keepList;
+        public static ConfigEntry<bool> useKeepListInverse;
         public static ConfigEntry<string> keepListInverse;
         public static ConfigEntry<bool> doDrain;
         public static ConfigEntry<float> drainPercent;
@@ -254,7 +263,9 @@ namespace BetterTeleporter.Config
             cooldown = ((BaseUnityPlugin)Plugin.instance).Config.Bind<int>("General", "Cooldown", 10, "Number of seconds between teleporter uses");
             cooldownInverse = ((BaseUnityPlugin)Plugin.instance).Config.Bind<int>("General", "CooldownInverse", 210, "Number of seconds between teleporter uses");
             cooldownEndDay = ((BaseUnityPlugin)Plugin.instance).Config.Bind<bool>("General", "CooldownEndsOnNewDay", true, "true/false if cooldown should end on new day");
+            useKeepList = ((BaseUnityPlugin)Plugin.instance).Config.Bind<bool>("General", "UseKeepList", true, "true/false if KeepItemList should be used");
             keepList = ((BaseUnityPlugin)Plugin.instance).Config.Bind<string>("General", "KeepItemList", "KeyItem,FlashlightItem,WalkieTalkie", "Comma-seperated list of items to be kept when teleported");
+            useKeepListInverse = ((BaseUnityPlugin)Plugin.instance).Config.Bind<bool>("General", "UseKeepListInverse", true, "true/false if KeepItemListInverse");
             keepListInverse = ((BaseUnityPlugin)Plugin.instance).Config.Bind<string>("General", "KeepItemListInverse", "KeyItem,FlashlightItem,WalkieTalkie,RadarBoosterItem", "Comma-seperated list of items to be kept when teleported with inverse teleporter");
             doDrain = ((BaseUnityPlugin)Plugin.instance).Config.Bind<bool>("General", "DrainItem", true, "true/false if items should drain battery charge");
             drainPercent = ((BaseUnityPlugin)Plugin.instance).Config.Bind<float>("General", "DrainPercent", 0.5f, "The percentage (as float 0 to 1) of total charge that battery items lose when teleporting");
@@ -262,7 +273,9 @@ namespace BetterTeleporter.Config
             cooldownAmmount = cooldown.Value;
             cooldownAmmountInverse = cooldownInverse.Value;
             cooldownEnd = cooldownEndDay.Value;
+            doUseKeepList = useKeepList.Value;
             SetKeepList(keepList.Value, false);
+            doUseKeepListInverse = useKeepListInverse.Value;
             SetKeepList(keepListInverse.Value, true);
             doDrainItems = doDrain.Value;
             drainItemsPercent = drainPercent.Value;
@@ -331,6 +344,8 @@ namespace BetterTeleporter.Config
                 val.WriteValueSafe<int>(ConfigSettings.cooldown.Value, default(FastBufferWriter.ForPrimitives));
                 val.WriteValueSafe<int>(ConfigSettings.cooldownInverse.Value, default(FastBufferWriter.ForPrimitives));
                 val.WriteValueSafe<bool>(ConfigSettings.cooldownEndDay.Value, default(FastBufferWriter.ForPrimitives));
+                val.WriteValueSafe<bool>(ConfigSettings.useKeepList.Value, default(FastBufferWriter.ForPrimitives));
+                val.WriteValueSafe<bool>(ConfigSettings.useKeepListInverse.Value, default(FastBufferWriter.ForPrimitives));
                 val.WriteValueSafe<bool>(ConfigSettings.doDrain.Value, default(FastBufferWriter.ForPrimitives));
                 val.WriteValueSafe<float>(ConfigSettings.drainPercent.Value, default(FastBufferWriter.ForPrimitives));
                 NetworkManager.Singleton.CustomMessagingManager.SendNamedMessage("BetterTeleporterReceiveConfigSync", clientId, val, NetworkDelivery.ReliableSequenced);
@@ -360,6 +375,12 @@ namespace BetterTeleporter.Config
                 ((FastBufferReader)reader).ReadValueSafe<bool>(out bool coolDay);
                 ConfigSettings.cooldownEnd = coolDay;
                 Plugin.log.LogInfo($"Recieved 'cooldownEnd = {coolDay}");
+                ((FastBufferReader)reader).ReadValueSafe<bool>(out bool useKeepList);
+                ConfigSettings.doUseKeepList = useKeepList;
+                Plugin.log.LogInfo($"Recieved 'doUseKeepList = {useKeepList}");
+                ((FastBufferReader)reader).ReadValueSafe<bool>(out bool useKeepListInverse);
+                ConfigSettings.doUseKeepListInverse = useKeepListInverse;
+                Plugin.log.LogInfo($"Recieved 'doUseKeepListInverse = {useKeepListInverse}");
                 ((FastBufferReader)reader).ReadValueSafe<bool>(out bool doDrain);
                 ConfigSettings.doDrainItems = doDrain;
                 Plugin.log.LogInfo($"Recieved 'doDrainItems = {doDrain}");
